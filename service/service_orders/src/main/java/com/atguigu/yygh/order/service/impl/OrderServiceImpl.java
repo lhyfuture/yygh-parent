@@ -15,6 +15,8 @@ import com.atguigu.yygh.order.utils.HttpRequestHelper;
 import com.atguigu.yygh.user.client.PatientFeignClient;
 import com.atguigu.yygh.vo.hosp.ScheduleOrderVo;
 import com.atguigu.yygh.vo.msm.MsmVo;
+import com.atguigu.yygh.vo.order.OrderCountQueryVo;
+import com.atguigu.yygh.vo.order.OrderCountVo;
 import com.atguigu.yygh.vo.order.OrderMqVo;
 import com.atguigu.yygh.vo.order.OrderQueryVo;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -28,8 +30,10 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.HttpRequestHandler;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.stream.Collectors;
 
 @Service
 public class OrderServiceImpl extends
@@ -304,6 +308,54 @@ public class OrderServiceImpl extends
                 orderMqVo.setMsmVo(msmVo);
                 rabbitService.sendMessage(MqConst.EXCHANGE_DIRECT_ORDER, MqConst.ROUTING_ORDER, orderMqVo);
                 return true;
+
+    }
+
+
+    //就诊提醒
+    @Override
+    public void patientTips() {
+        //1.先查询符合条件的订单集合
+        QueryWrapper<OrderInfo> wrapper = new QueryWrapper<>();
+        //查找预约日期是今天的订单，日期格式是yyyy-MM-dd
+        wrapper.eq("reserve_date",
+                new DateTime().toString("yyyy-MM-dd"));
+        List<OrderInfo> orderInfoList = baseMapper.selectList(wrapper);
+        //2.遍历集合，拼写短信，发送mq消息
+        for(OrderInfo orderInfo : orderInfoList) {
+            //短信提示
+            MsmVo msmVo = new MsmVo();
+            msmVo.setPhone(orderInfo.getPatientPhone());
+            String reserveDate = new DateTime(orderInfo.getReserveDate()).toString("yyyy-MM-dd") + (orderInfo.getReserveTime() == 0 ? "上午" : "下午");
+            Map<String, Object> param = new HashMap<String, Object>() {{
+                put("title", orderInfo.getHosname() + "|" + orderInfo.getDepname() + "|" + orderInfo.getTitle());
+                put("reserveDate", reserveDate);
+                put("name", orderInfo.getPatientName());
+            }};
+            msmVo.setParam(param);
+            rabbitService.sendMessage(MqConst.EXCHANGE_DIRECT_MSM, MqConst.ROUTING_MSM_ITEM, msmVo);
+        }
+
+    }
+
+
+    @Override
+    public Map<String, Object> getCountMap(OrderCountQueryVo orderCountQueryVo) {
+        //1查询统计信息
+        List<OrderCountVo> orderCountVoList = baseMapper.selectOrderCount(orderCountQueryVo);
+        //2分别收集x、y轴数据
+        List<String> dateList =
+                orderCountVoList.stream()
+                        .map(OrderCountVo::getReserveDate)//key:ReserveDate value:[xxx,xxx,xx,xx,xx]
+                        .collect(Collectors.toList());
+        List<Integer> countList =
+                orderCountVoList.stream().map(OrderCountVo::getCount).collect(Collectors.toList());
+
+        //3封装数据返回
+        Map<String, Object> map = new HashMap<>();
+        map.put("dateList", dateList);
+        map.put("countList", countList);
+        return map;
 
     }
 }
